@@ -8,52 +8,126 @@ interface SubtitleLine {
   text: string;
 }
 
-export function generateSrt(
+function assEscape(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/\{/g, "\\{")
+    .replace(/\}/g, "\\}")
+    .replace(/\n/g, " ");
+}
+
+function formatAssTime(seconds: number): string {
+  const clamped = Math.max(0, seconds);
+  const h = Math.floor(clamped / 3600);
+  const m = Math.floor((clamped % 3600) / 60);
+  const s = Math.floor(clamped % 60);
+  const cs = Math.floor((clamped - Math.floor(clamped)) * 100);
+  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
+}
+
+function buildLines(
   words: TranscriptWord[],
   clipStart: number,
   clipEnd: number,
-): string {
-  const clipWords = words.filter(
-    (w) => w.start >= clipStart && w.end <= clipEnd,
-  );
+  maxWords: number = 5,
+  maxDuration: number = 1.8,
+): SubtitleLine[] {
+  const clipWords = words
+    .filter((w) => w.end >= clipStart && w.start <= clipEnd)
+    .sort((a, b) => a.start - b.start);
 
-  if (clipWords.length === 0) return "";
+  if (clipWords.length === 0) return [];
 
   const lines: SubtitleLine[] = [];
   let currentLine: TranscriptWord[] = [];
   let lineStart = clipWords[0].start;
 
   for (const word of clipWords) {
+    if (currentLine.length === 0) {
+      // Anchor each new subtitle line to the first spoken word in that line.
+      lineStart = word.start;
+    }
     currentLine.push(word);
 
     const lineDuration = word.end - lineStart;
     const wordCount = currentLine.length;
 
-    if (wordCount >= 10 || lineDuration >= 4.0) {
+    if (wordCount >= maxWords || lineDuration >= maxDuration) {
+      const start = Math.max(0, lineStart - clipStart);
+      const end = Math.max(start, Math.min(clipEnd, word.end) - clipStart);
       lines.push({
         index: lines.length + 1,
-        start: lineStart - clipStart,
-        end: word.end - clipStart,
+        start,
+        end,
         text: currentLine.map((w) => w.word).join(" ").trim(),
       });
       currentLine = [];
-      lineStart = word.end;
     }
   }
 
   if (currentLine.length > 0) {
+    const lineEnd = currentLine[currentLine.length - 1].end;
+    const start = Math.max(0, lineStart - clipStart);
+    const end = Math.max(start, Math.min(clipEnd, lineEnd) - clipStart);
     lines.push({
       index: lines.length + 1,
-      start: lineStart - clipStart,
-      end: currentLine[currentLine.length - 1].end - clipStart,
+      start,
+      end,
       text: currentLine.map((w) => w.word).join(" ").trim(),
     });
   }
 
+  return lines;
+}
+
+export function generateSrt(
+  words: TranscriptWord[],
+  clipStart: number,
+  clipEnd: number,
+): string {
+  const lines = buildLines(words, clipStart, clipEnd, 6, 2.5);
+  if (lines.length === 0) return "";
+
   return lines
     .map(
       (l) =>
-        `${l.index}\n${formatSrtTime(Math.max(0, l.start))} --> ${formatSrtTime(Math.max(0, l.end))}\n${l.text}\n`,
+        `${l.index}\n${formatSrtTime(Math.max(0, l.start))} --> ${formatSrtTime(Math.max(Math.max(0, l.start) + 0.25, l.end))}\n${l.text}\n`,
     )
     .join("\n");
+}
+
+export function generateAss(
+  words: TranscriptWord[],
+  clipStart: number,
+  clipEnd: number,
+): string {
+  const lines = buildLines(words, clipStart, clipEnd, 4, 1.5);
+  if (lines.length === 0) return "";
+
+  const header = `[Script Info]
+ScriptType: v4.00+
+PlayResX: 720
+PlayResY: 1280
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.709
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Caption,Arial,44,&H00FFFFFF,&H000000FF,&H00000000,&HA0000000,-1,0,0,0,100,100,0,0,1,3,1,5,100,100,320,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
+
+  const events = lines
+    .map((l) => {
+      const start = formatAssTime(Math.max(0, l.start));
+      const end = formatAssTime(Math.max(Math.max(0, l.start) + 0.3, l.end));
+      const upper = assEscape(l.text).toUpperCase();
+      return `Dialogue: 0,${start},${end},Caption,,0,0,0,,${upper}`;
+    })
+    .join("\n");
+
+  return `${header}${events}\n`;
 }

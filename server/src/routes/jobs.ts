@@ -44,8 +44,12 @@ function updateJob(jobId: string, updates: Partial<Job>) {
   sendSSE(jobId, "status", {
     status: job.status,
     progress: job.progress,
-    message: job.progressMessage,
+    message: job.status === "error" ? (job.error || job.progressMessage) : job.progressMessage,
+    error: job.error,
   });
+  if (job.status === "error") {
+    sendSSE(jobId, "error", { error: job.error || "Unknown error" });
+  }
 }
 
 // POST /api/jobs — Create a new job (file upload or YouTube URL)
@@ -77,6 +81,7 @@ router.post("/", upload.single("video"), async (req: Request, res: Response) => 
     updateJob(jobId, {
       status: "error",
       error: err.message || "Unknown error",
+      progressMessage: "Failed",
     });
   });
 });
@@ -230,33 +235,67 @@ router.post("/:id/generate", async (req: Request, res: Response) => {
   try {
     for (let i = 0; i < clips.length; i++) {
       const c = clips[i];
+      // Keep generated clips in a useful short-form range.
+      const minDuration = 15;
+      const maxDuration = 30;
+      let startTime = Number(c.startTime);
+      let endTime = Number(c.endTime);
+      if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) {
+        throw new Error(`Invalid clip times for "${c.title}"`);
+      }
+      let duration = endTime - startTime;
+      if (duration < minDuration) {
+        const extra = minDuration - duration;
+        startTime = Math.max(0, startTime - extra / 2);
+        endTime = startTime + minDuration;
+      } else if (duration > maxDuration) {
+        endTime = startTime + maxDuration;
+      }
+
       updateJob(id, {
         progressMessage: `Generating clip ${i + 1} of ${clips.length}: ${c.title}`,
         progress: 85 + (i / clips.length) * 14,
       });
 
-      const result = await cutClip(
-        job.videoPath,
-        job.id,
-        c.highlightId,
-        c.title,
-        c.startTime,
-        c.endTime,
-        job.words,
-        (msg) => updateJob(id, { progressMessage: msg }),
-      );
+      try {
+        const result = await cutClip(
+          job.videoPath,
+          job.id,
+          c.highlightId,
+          c.title,
+          startTime,
+          endTime,
+          job.words,
+          (msg) => updateJob(id, { progressMessage: msg }),
+        );
 
-      job.clips.push(result);
-      sendSSE(id, "clip_ready", {
-        clip: {
-          id: result.id,
-          highlightId: result.highlightId,
-          title: result.title,
-          startTime: result.startTime,
-          endTime: result.endTime,
-          status: result.status,
-        },
-      });
+        job.clips.push(result);
+        sendSSE(id, "clip_ready", {
+          clip: {
+            id: result.id,
+            highlightId: result.highlightId,
+            title: result.title,
+            startTime: result.startTime,
+            endTime: result.endTime,
+            status: result.status,
+          },
+        });
+      } catch (clipErr: any) {
+        const msg = clipErr?.message || "Clip render failed";
+        console.error("Clip generation failed:", msg);
+        sendSSE(id, "clip_ready", {
+          clip: {
+            id: `error-${i}`,
+            highlightId: c.highlightId,
+            title: c.title,
+            startTime,
+            endTime,
+            status: "error",
+          },
+        });
+        // Continue generating remaining clips instead of aborting the whole job.
+        continue;
+      }
     }
 
     updateJob(id, {

@@ -95,18 +95,34 @@ const Home = () => {
       setProgress(data.progress || 0);
       setProgressMessage(data.message || "");
       if (data.status === "error") {
-        setError(data.message || "Something went wrong during processing.");
+        setError(data.error || data.message || "Something went wrong during processing.");
         setStep("upload");
         es.close();
       }
     });
 
+    es.addEventListener("error", (e: any) => {
+      try {
+        const data = JSON.parse(e.data);
+        setError(data.error || "Processing failed.");
+      } catch {
+        setError("Processing failed.");
+      }
+      setStep("upload");
+      es.close();
+    });
+
     es.addEventListener("highlights_ready", (e) => {
       const data = JSON.parse(e.data);
-      const hl: Highlight[] = data.highlights.map((h: any) => ({
+      const incoming: Highlight[] = data.highlights.map((h: any) => ({
         ...h,
-        selected: h.score >= 7,
+        selected: false,
       }));
+      // Always preselect at least 5 clips for the user.
+      const sorted = [...incoming].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      const toSelect = Math.min(5, sorted.length);
+      const selectedIds = new Set(sorted.slice(0, toSelect).map((h) => h.id));
+      const hl = incoming.map((h) => ({ ...h, selected: selectedIds.has(h.id) }));
       setHighlights(hl);
       setStep("highlights");
     });
@@ -614,12 +630,14 @@ const Home = () => {
               <div className="space-y-6">
                 {clips.map((clip) => (
                   <div key={clip.id} className="border rounded-lg overflow-hidden">
-                    <div className="aspect-video bg-black">
-                      <video
-                        src={`${API_BASE}/jobs/${jobId}/clips/${clip.id}`}
-                        controls
-                        className="w-full h-full"
-                      />
+                    <div className="bg-black p-4">
+                      <div className="aspect-[9/16] max-w-[360px] mx-auto rounded-md overflow-hidden">
+                        <video
+                          src={`${API_BASE}/jobs/${jobId}/clips/${clip.id}`}
+                          controls
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
                     </div>
                     <div className="p-4 flex items-center justify-between">
                       <div>

@@ -39,29 +39,31 @@ export async function extractAudio(
 async function splitAudio(
   audioPath: string,
   jobId: string,
-  maxSizeMB: number = 24,
-): Promise<string[]> {
+  maxSizeMB: number = 20,
+): Promise<Array<{ path: string; startTime: number }>> {
   const stats = fs.statSync(audioPath);
   const sizeMB = stats.size / (1024 * 1024);
 
   if (sizeMB <= maxSizeMB) {
-    return [audioPath];
+    return [{ path: audioPath, startTime: 0 }];
   }
 
   const dir = jobDir(jobId);
   const numChunks = Math.ceil(sizeMB / maxSizeMB);
   const duration = await getAudioDuration(audioPath);
-  const chunkDuration = Math.ceil(duration / numChunks);
-  const chunks: string[] = [];
+  const chunkDuration = duration / numChunks;
+  const chunks: Array<{ path: string; startTime: number }> = [];
 
   for (let i = 0; i < numChunks; i++) {
     const start = i * chunkDuration;
     const chunkPath = path.join(dir, `audio-chunk-${i}.mp3`);
+    const chunkDur =
+      i === numChunks - 1 ? Math.max(0, duration - start) : chunkDuration;
 
     await new Promise<void>((resolve, reject) => {
       ffmpeg(audioPath)
         .setStartTime(start)
-        .setDuration(chunkDuration)
+        .setDuration(chunkDur)
         .audioBitrate("64k")
         .format("mp3")
         .output(chunkPath)
@@ -70,7 +72,7 @@ async function splitAudio(
         .run();
     });
 
-    chunks.push(chunkPath);
+    chunks.push({ path: chunkPath, startTime: start });
   }
 
   return chunks;
@@ -129,11 +131,8 @@ export async function transcribeAudio(
   const allWords: TranscriptWord[] = [];
   let segmentIndex = 0;
 
-  const totalDuration = await getAudioDuration(audioPath);
-  const chunkDuration = chunks.length > 1 ? totalDuration / chunks.length : 0;
-
   for (let i = 0; i < chunks.length; i++) {
-    const timeOffset = i * chunkDuration;
+    const timeOffset = chunks[i].startTime;
 
     onProgress?.(
       chunks.length > 1
@@ -141,7 +140,7 @@ export async function transcribeAudio(
         : "Transcribing audio with AI...",
     );
 
-    const result = await transcribeWithGroq(chunks[i]);
+    const result = await transcribeWithGroq(chunks[i].path);
 
     for (const seg of result.segments) {
       const segStart = seg.start + timeOffset;

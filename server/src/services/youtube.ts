@@ -13,7 +13,15 @@ export async function downloadYouTube(
 
   return new Promise((resolve, reject) => {
     const args = [
-      "-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best",
+      // Prefer higher quality to reduce vertical upscale artifacts.
+      "-f",
+      "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best",
+      // Prefer H.264 where possible for compatibility.
+      "-S",
+      "res:1080,fps,codec:h264",
+      "--js-runtimes", "deno",
+      "--remote-components", "ejs:github",
+      "-N", "4",
       "--merge-output-format", "mp4",
       "-o", outputTemplate,
       "--no-playlist",
@@ -28,7 +36,8 @@ export async function downloadYouTube(
 
     proc.stdout.on("data", (data: Buffer) => {
       const line = data.toString();
-      const match = line.match(/(\d+\.?\d*)%/);
+      // yt-dlp emits lines like: "[download]  12.3% of ..."
+      const match = line.match(/\[download\]\s+(\d+\.?\d*)%/);
       if (match) {
         const pct = parseFloat(match[1]);
         if (pct > lastPct) {
