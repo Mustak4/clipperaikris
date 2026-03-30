@@ -50,6 +50,7 @@ interface ClipResult {
   endTime: number;
   status: string;
 }
+type CaptionPreset = "clean" | "bold" | "neon";
 
 type Step = "upload" | "processing" | "highlights" | "generating" | "results";
 
@@ -67,6 +68,8 @@ const Home = () => {
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [clips, setClips] = useState<ClipResult[]>([]);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
+  const [captionPreset, setCaptionPreset] = useState<CaptionPreset>("bold");
+  const [ctaText, setCtaText] = useState("Follow for more");
   const videoRef = useRef<HTMLVideoElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -221,6 +224,10 @@ const Home = () => {
             startTime: h.startTime,
             endTime: h.endTime,
           })),
+          options: {
+            captionPreset,
+            ctaText,
+          },
         }),
       });
 
@@ -550,6 +557,32 @@ const Home = () => {
                 </ScrollArea>
 
                 <Separator className="my-4" />
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="caption-preset">Caption Style</Label>
+                    <select
+                      id="caption-preset"
+                      value={captionPreset}
+                      onChange={(e) => setCaptionPreset(e.target.value as CaptionPreset)}
+                      className="h-10 rounded-md border bg-background px-3 text-sm"
+                    >
+                      <option value="clean">Clean</option>
+                      <option value="bold">Bold</option>
+                      <option value="neon">Neon</option>
+                    </select>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="cta-text">End Card CTA</Label>
+                    <Input
+                      id="cta-text"
+                      value={ctaText}
+                      onChange={(e) => setCtaText(e.target.value)}
+                      maxLength={42}
+                      placeholder="Follow for more"
+                    />
+                  </div>
+                </div>
 
                 <div className="flex items-center justify-between">
                   <Button variant="outline" onClick={handleReset}>

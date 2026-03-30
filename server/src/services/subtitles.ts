@@ -1,4 +1,5 @@
 import type { TranscriptWord } from "../types.js";
+import type { CaptionPreset } from "../types.js";
 import { formatSrtTime } from "../utils.js";
 
 interface SubtitleLine {
@@ -6,6 +7,7 @@ interface SubtitleLine {
   start: number;
   end: number;
   text: string;
+  words: TranscriptWord[];
 }
 
 function assEscape(text: string): string {
@@ -25,7 +27,7 @@ function formatAssTime(seconds: number): string {
   return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
 }
 
-const EMPHASIS_STOP_WORDS = new Set([
+const POWER_WORD_STOP_WORDS = new Set([
   "the",
   "and",
   "for",
@@ -34,7 +36,6 @@ const EMPHASIS_STOP_WORDS = new Set([
   "with",
   "from",
   "your",
-  "you",
   "have",
   "just",
   "into",
@@ -49,44 +50,36 @@ const EMPHASIS_STOP_WORDS = new Set([
   "because",
   "really",
   "very",
+  "then",
+  "than",
 ]);
 
-function normalizeToken(token: string): string {
-  return token.toLowerCase().replace(/[^a-z0-9']/g, "");
+function normalizeToken(word: string): string {
+  return word.toLowerCase().replace(/[^a-z0-9']/g, "");
 }
 
-function scoreWordForEmphasis(raw: string): number {
-  const token = normalizeToken(raw);
-  if (!token || EMPHASIS_STOP_WORDS.has(token)) return -1;
-  let score = token.length;
-  if (/[!?]/.test(raw)) score += 3;
-  if (/^[A-Z]{2,}$/.test(raw)) score += 2;
-  return score;
+function isPowerWord(word: string): boolean {
+  const token = normalizeToken(word);
+  if (!token || POWER_WORD_STOP_WORDS.has(token)) return false;
+  if (/\d/.test(token)) return true;
+  if (/[!?]/.test(word)) return true;
+  if (token.length >= 7) return true;
+  return /^(never|always|best|worst|huge|massive|secret|mistake|insane|crazy)$/i.test(token);
 }
 
-function stylizeAssText(text: string): string {
-  const words = text.split(/\s+/).filter(Boolean);
-  if (words.length === 0) return "";
-
-  let bestIndex = -1;
-  let bestScore = -1;
-  for (let i = 0; i < words.length; i++) {
-    const score = scoreWordForEmphasis(words[i]);
-    if (score > bestScore) {
-      bestScore = score;
-      bestIndex = i;
-    }
-  }
-
-  return words
-    .map((w, i) => {
-      const escaped = assEscape(w);
-      if (i !== bestIndex || bestScore < 4) return escaped;
-      // Slightly highlight one impactful word per line for clearer visual hierarchy.
-      return `{\\c&H004AD5FF&\\b1}${escaped}{\\rCaption}`;
+function toKaraokeText(lineWords: TranscriptWord[]): string {
+  if (lineWords.length === 0) return "";
+  return lineWords
+    .map((w) => {
+      const durCs = Math.max(5, Math.round((w.end - w.start) * 100));
+      const base = assEscape(w.word).toUpperCase();
+      if (!isPowerWord(w.word)) {
+        return `{\\kf${durCs}}${base}`;
+      }
+      // Power words get a stronger active visual pop for hierarchy.
+      return `{\\kf${durCs}\\b1\\fs50\\c&H004AD5FF&}${base}{\\rCaption}`;
     })
-    .join(" ")
-    .toUpperCase();
+    .join(" ");
 }
 
 function buildLines(
@@ -124,6 +117,7 @@ function buildLines(
         start,
         end,
         text: currentLine.map((w) => w.word).join(" ").trim(),
+        words: [...currentLine],
       });
       currentLine = [];
     }
@@ -138,6 +132,7 @@ function buildLines(
       start,
       end,
       text: currentLine.map((w) => w.word).join(" ").trim(),
+      words: [...currentLine],
     });
   }
 
@@ -164,9 +159,19 @@ export function generateAss(
   words: TranscriptWord[],
   clipStart: number,
   clipEnd: number,
+  preset: CaptionPreset = "bold",
 ): string {
   const lines = buildLines(words, clipStart, clipEnd, 4, 1.5);
   if (lines.length === 0) return "";
+
+  const styleByPreset: Record<CaptionPreset, string> = {
+    clean:
+      "Style: Caption,Arial,40,&H00FFFFFF,&H00BFBFBF,&H00000000,&HA0000000,-1,0,0,0,100,100,0,0,1,2.3,0.5,2,90,90,150,1",
+    bold:
+      "Style: Caption,Arial,44,&H00FFFFFF,&H00A9A9A9,&H00000000,&HA0000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,90,140,1",
+    neon:
+      "Style: Caption,Arial,44,&H00F8F8F8,&H0077E6FF,&H00000000,&HA0000000,-1,0,0,0,100,100,0,0,1,3.5,1.2,2,90,90,140,1",
+  };
 
   const header = `[Script Info]
 ScriptType: v4.00+
@@ -178,7 +183,7 @@ YCbCr Matrix: TV.709
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,Arial,44,&H00FFFFFF,&H000000FF,&H00000000,&HA0000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,90,140,1
+${styleByPreset[preset]}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -188,8 +193,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     .map((l) => {
       const start = formatAssTime(Math.max(0, l.start));
       const end = formatAssTime(Math.max(Math.max(0, l.start) + 0.3, l.end));
-      const styled = stylizeAssText(l.text);
-      return `Dialogue: 0,${start},${end},Caption,,0,0,0,,${styled}`;
+      const karaoke = toKaraokeText(l.words);
+      return `Dialogue: 0,${start},${end},Caption,,0,0,0,,${karaoke}`;
     })
     .join("\n");
 

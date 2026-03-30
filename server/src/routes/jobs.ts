@@ -8,7 +8,7 @@ import { downloadYouTube } from "../services/youtube.js";
 import { extractAudio, transcribeAudio } from "../services/transcription.js";
 import { detectHighlights } from "../services/highlights.js";
 import { cutClip } from "../services/clipper.js";
-import type { Job } from "../types.js";
+import type { Job, CaptionPreset, RenderOptions } from "../types.js";
 
 const router = Router();
 
@@ -50,6 +50,53 @@ function updateJob(jobId: string, updates: Partial<Job>) {
   if (job.status === "error") {
     sendSSE(jobId, "error", { error: job.error || "Unknown error" });
   }
+}
+
+const HOOK_FILLER_WORDS = new Set([
+  "so",
+  "okay",
+  "ok",
+  "well",
+  "um",
+  "uh",
+  "like",
+  "you",
+  "know",
+  "today",
+  "guys",
+  "hey",
+  "hello",
+  "welcome",
+  "basically",
+  "actually",
+  "literally",
+  "right",
+  "just",
+]);
+
+function normalizeWordToken(word: string): string {
+  return word.toLowerCase().replace(/[^a-z0-9']/g, "");
+}
+
+function computeHookShiftSeconds(
+  words: Job["words"],
+  startTime: number,
+  endTime: number,
+): number {
+  const scanEnd = Math.min(endTime, startTime + 2.5);
+  const headWords = words.filter((w) => w.start >= startTime && w.start <= scanEnd);
+  if (headWords.length === 0) return 0;
+
+  const candidate = headWords.find((w) => {
+    const token = normalizeWordToken(w.word);
+    if (!token || HOOK_FILLER_WORDS.has(token)) return false;
+    if (token.length >= 6) return true;
+    return /\d/.test(token) || /[!?]/.test(w.word);
+  });
+
+  if (!candidate) return 0;
+  const shift = candidate.start - startTime;
+  return Math.max(0, Math.min(1.5, shift));
 }
 
 // POST /api/jobs — Create a new job (file upload or YouTube URL)
@@ -217,6 +264,12 @@ router.post("/:id/generate", async (req: Request, res: Response) => {
 
   const { clips } = req.body as {
     clips: Array<{ highlightId: string; title: string; startTime: number; endTime: number }>;
+    options?: RenderOptions;
+  };
+  const renderOptions: RenderOptions = {
+    captionPreset: ((req.body?.options?.captionPreset as CaptionPreset) || "bold"),
+    ctaText:
+      typeof req.body?.options?.ctaText === "string" ? req.body.options.ctaText : "Follow for more",
   };
 
   if (!clips || clips.length === 0) {
@@ -252,6 +305,10 @@ router.post("/:id/generate", async (req: Request, res: Response) => {
         endTime = startTime + maxDuration;
       }
 
+      // Recut opening beat to skip low-energy filler and land faster on the first hook.
+      const hookShift = computeHookShiftSeconds(job.words, startTime, endTime);
+      startTime += hookShift;
+
       updateJob(id, {
         progressMessage: `Generating clip ${i + 1} of ${clips.length}: ${c.title}`,
         progress: 85 + (i / clips.length) * 14,
@@ -266,6 +323,7 @@ router.post("/:id/generate", async (req: Request, res: Response) => {
           startTime,
           endTime,
           job.words,
+          renderOptions,
           (msg) => updateJob(id, { progressMessage: msg }),
         );
 

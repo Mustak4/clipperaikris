@@ -23,6 +23,13 @@ export interface Highlight {
   transcript: string;
 }
 
+export type CaptionPreset = "clean" | "bold" | "neon";
+
+export interface RenderOptions {
+  captionPreset?: CaptionPreset;
+  ctaText?: string;
+}
+
 export interface ClipResult {
   id: string;
   highlightId: string;
