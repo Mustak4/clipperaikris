@@ -5,6 +5,8 @@ import { spawn } from "child_process";
 import { v4 as uuid } from "uuid";
 import { jobDir } from "../utils.js";
 import { generateAss, generateSrt } from "./subtitles.js";
+import { renderWithRemotion } from "./remotionRenderer.js";
+import { detectFaceTrack, type FaceTrackKeyframe } from "./faceTracker.js";
 import type { TranscriptWord, ClipResult, RenderOptions } from "../types.js";
 
 function getVideoDimensions(
@@ -23,9 +25,105 @@ function getVideoDimensions(
 }
 
 type SmartReframeTrack = {
-  panStart: number;
-  panEnd: number;
+  panA: number;
+  panB: number;
+  panC: number;
 };
+
+type ReframeKeyframe = {
+  t: number;
+  centerX: number;
+  zoom: number;
+};
+
+function getAnchorsFromFaces(
+  faceTrack: FaceTrackKeyframe[],
+  srcW: number,
+  cropW: number,
+): { panA: number; panB: number; panC: number } | null {
+  if (faceTrack.length < 3) return null;
+  const minCenter = cropW / 2;
+  const maxCenter = srcW - cropW / 2;
+  const clampCenter = (v: number) => Math.max(minCenter, Math.min(maxCenter, v));
+  const maxPan = Math.max(0, srcW - cropW);
+  const toPan = (center: number) =>
+    Math.max(0, Math.min(maxPan, Math.round(center - cropW / 2)));
+
+  const centers = faceTrack
+    .map((f) => clampCenter(f.centerX))
+    .sort((a, b) => a - b);
+
+  const pick = (q: number) =>
+    centers[
+      Math.max(
+        0,
+        Math.min(centers.length - 1, Math.floor((centers.length - 1) * q)),
+      )
+    ];
+
+  return {
+    panA: toPan(pick(0.2)),
+    panB: toPan(pick(0.5)),
+    panC: toPan(pick(0.8)),
+  };
+}
+
+function buildReframeKeyframes(
+  srcW: number,
+  srcH: number,
+  clipDuration: number,
+  track: SmartReframeTrack | null,
+  faceTrack: FaceTrackKeyframe[],
+): ReframeKeyframe[] {
+  const outW = 1080;
+  const outH = 1920;
+  const cropW = Math.min(srcW, Math.round(srcH * (outW / outH)));
+  const maxPanX = Math.max(0, srcW - cropW);
+  const panA = track ? track.panA : Math.round(maxPanX * 0.25);
+  const panB = track ? track.panB : Math.round(maxPanX * 0.5);
+  const panC = track ? track.panC : Math.round(maxPanX * 0.75);
+  const toCenter = (panX: number) =>
+    Math.max(cropW / 2, Math.min(srcW - cropW / 2, panX + cropW / 2));
+
+  if (faceTrack.length >= 3) {
+    const frames = faceTrack
+      .filter((f) => f.t <= clipDuration + 0.05)
+      .slice(0, 36)
+      .map((f) => ({
+        t: Math.max(0, Math.min(clipDuration, f.t)),
+        centerX: Math.max(cropW / 2, Math.min(srcW - cropW / 2, f.centerX)),
+        // Smaller face in frame => zoom in more.
+        zoom: Math.max(1.12, Math.min(1.45, 1.28 - Math.min(0.22, f.faceWidthRatio) * 0.55)),
+      }));
+
+    if (frames.length >= 2) {
+      // Add fixed endpoints for interpolation stability.
+      const first = frames[0];
+      const last = frames[frames.length - 1];
+      return [
+        { t: 0, centerX: first.centerX, zoom: first.zoom },
+        ...frames,
+        { t: clipDuration, centerX: last.centerX, zoom: last.zoom },
+      ];
+    }
+  }
+
+  // Phase-2 multi-speaker framing:
+  // hold -> move -> hold -> move to mimic active-speaker cuts.
+  const d = Math.max(0.5, clipDuration);
+  const t1 = Math.min(d * 0.22, 1.6);
+  const t2 = Math.min(d * 0.46, 3.4);
+  const t3 = Math.min(d * 0.7, 5.0);
+  const t4 = Math.max(t3 + 0.2, d);
+
+  return [
+    { t: 0, centerX: toCenter(panA), zoom: 1.2 },
+    { t: t1, centerX: toCenter(panA), zoom: 1.28 },
+    { t: t2, centerX: toCenter(panB), zoom: 1.24 },
+    { t: t3, centerX: toCenter(panC), zoom: 1.3 },
+    { t: t4, centerX: toCenter(panC), zoom: 1.18 },
+  ];
+}
 
 async function detectSmartReframeTrack(
   inputPath: string,
@@ -58,27 +156,34 @@ async function detectSmartReframeTrack(
       const centers = matches
         .map((m) => Number(m[1]))
         .filter((x) => Number.isFinite(x))
-        .map((x) => x + cropW / 2)
-        .sort((a, b) => a - b);
+        .map((x) => x + cropW / 2);
 
       if (centers.length === 0) return resolve(null);
 
       const pick = (q: number) =>
-        centers[Math.max(0, Math.min(centers.length - 1, Math.floor((centers.length - 1) * q)))];
+        centers[
+          Math.max(
+            0,
+            Math.min(centers.length - 1, Math.floor((centers.length - 1) * q)),
+          )
+        ];
 
-      const p20 = pick(0.2);
-      const p80 = pick(0.8);
+      const p15 = pick(0.15);
+      const p50 = pick(0.5);
+      const p85 = pick(0.85);
       const minCenter = cropW / 2;
       const maxCenter = srcW - cropW / 2;
       const clampCenter = (v: number) => Math.max(minCenter, Math.min(maxCenter, v));
-      const startCenter = clampCenter(p20);
-      const endCenter = clampCenter(p80);
+      const aCenter = clampCenter(p15);
+      const bCenter = clampCenter(p50);
+      const cCenter = clampCenter(p85);
       const maxPan = Math.max(0, srcW - cropW);
       const toX = (center: number) => Math.max(0, Math.min(maxPan, Math.round(center - cropW / 2)));
 
       resolve({
-        panStart: toX(startCenter),
-        panEnd: toX(endCenter),
+        panA: toX(aCenter),
+        panB: toX(bCenter),
+        panC: toX(cCenter),
       });
     });
   });
@@ -144,8 +249,8 @@ export async function cutClip(
   });
 
   const { width: srcW, height: srcH } = await getVideoDimensions(rawClipPath);
-  const outW = 720;
-  const outH = 1280;
+  const outW = 1080;
+  const outH = 1920;
   const srcAR = srcW / srcH;
   const outAR = outW / outH;
 
@@ -155,6 +260,92 @@ export async function cutClip(
     const cropW = Math.round(cropH * (outW / outH));
     smartTrack = await detectSmartReframeTrack(rawClipPath, srcW, cropW);
   }
+  const clipDuration = Math.max(0.1, endTime - startTime);
+  const faceTrack = await detectFaceTrack(rawClipPath, srcW);
+  const reframeKeyframes = buildReframeKeyframes(
+    srcW,
+    srcH,
+    clipDuration,
+    smartTrack,
+    faceTrack,
+  );
+
+  const preferRemotion = (renderOptions.renderEngine ?? "remotion") === "remotion";
+  if (preferRemotion) {
+    try {
+      onProgress?.(`Rendering with Remotion: ${title}...`);
+          const remotionFps = 25;
+      await renderWithRemotion({
+        inputVideoPath: rawClipPath,
+        outputVideoPath: finalClipPath,
+        srtPath,
+            durationInFrames: Math.max(1, Math.ceil(clipDuration * remotionFps)),
+            durationSeconds: clipDuration,
+        srcW,
+        srcH,
+        keyframes: reframeKeyframes,
+            captionPreset: renderOptions.captionPreset || "bold",
+        // End-card CTA gets burned in with FFmpeg after Remotion renders.
+        ctaText: "",
+      });
+
+      // Burn end-card CTA reliably (Remotion CTA has been unreliable in this setup).
+      const ctaText = (renderOptions.ctaText || "Follow for more").toUpperCase();
+      const escapedCtaText = ctaText
+        .replace(/\\/g, "\\\\")
+        .replace(/:/g, "\\:")
+        .replace(/'/g, "\\'")
+        .replace(/,/g, "\\,");
+      const ctaStart = Math.max(0, clipDuration - 1.15);
+
+      const ctaOutPath = finalClipPath.replace(/\.mp4$/, "-cta.mp4");
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(finalClipPath)
+          .videoFilters([
+            `drawbox=x=0:y=h-210:w=iw:h=210:color=black@0.38:t=fill:enable='gte(t,${ctaStart})'`,
+            `drawtext=text='${escapedCtaText}':fontcolor=white:fontsize=54:x=(w-text_w)/2:y=h-130:enable='gte(t,${ctaStart})'`,
+          ].join(","))
+          .outputOptions([
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "copy",
+            "-movflags",
+            "+faststart",
+          ])
+          .on("end", () => resolve())
+          .on("error", (err) => reject(err))
+          .save(ctaOutPath);
+      });
+
+      // Replace final output with CTA version.
+      if (fs.existsSync(ctaOutPath)) {
+        if (fs.existsSync(finalClipPath)) fs.unlinkSync(finalClipPath);
+        fs.renameSync(ctaOutPath, finalClipPath);
+      }
+
+      if (fs.existsSync(rawClipPath)) fs.unlinkSync(rawClipPath);
+      return {
+        id: clipId,
+        highlightId,
+        title,
+        startTime,
+        endTime,
+        videoPath: finalClipPath,
+        srtPath,
+        status: "done",
+      };
+    } catch (remotionErr: any) {
+      // Fall back to ffmpeg render path when Remotion is unavailable at runtime.
+      console.error("Remotion render failed, falling back to ffmpeg:", remotionErr?.message || remotionErr);
+    }
+  }
 
   onProgress?.(`Rendering vertical clip: ${title}...`);
   try {
@@ -163,7 +354,6 @@ export async function cutClip(
       .replace(/\\/g, "/")
       .replace(/:/g, "\\:");
 
-    const clipDuration = Math.max(0.1, endTime - startTime);
     const fadeDuration = Math.min(1, clipDuration / 2);
     const fadeOutStart = Math.max(0, clipDuration - fadeDuration);
     const ctaText = (renderOptions.ctaText || "FOLLOW FOR MORE").toUpperCase();
@@ -180,25 +370,42 @@ export async function cutClip(
 
     if (srcAR > outAR + 0.05) {
       // Source is wider than output (e.g. 16:9 → 9:16).
-      // Apply a slow Ken Burns zoom + drift so it feels alive.
+      // Keep speaker framing closer to center and avoid corner-locking.
       const cropH = srcH;
       const cropW = Math.round(cropH * (outW / outH));
       const maxPanX = Math.max(0, srcW - cropW);
-      let panStart = Math.round(maxPanX * 0.35);
-      let panEnd = Math.round(maxPanX * 0.65);
-      if (smartTrack) {
-        panStart = smartTrack.panStart;
-        panEnd = smartTrack.panEnd;
+      let panA = Math.round(maxPanX * 0.25);
+      let panB = Math.round(maxPanX * 0.5);
+      let panC = Math.round(maxPanX * 0.75);
+      const faceAnchors = getAnchorsFromFaces(faceTrack, srcW, cropW);
+      if (faceAnchors) {
+        panA = faceAnchors.panA;
+        panB = faceAnchors.panB;
+        panC = faceAnchors.panC;
+      } else if (smartTrack) {
+        panA = smartTrack.panA;
+        panB = smartTrack.panB;
+        panC = smartTrack.panC;
       }
+      // Clamp pan spread so framing does not stick to extreme corners.
+      const maxDelta = Math.round(maxPanX * 0.34);
+      const clampAround = (base: number, target: number) =>
+        Math.max(0, Math.min(maxPanX, Math.max(base - maxDelta, Math.min(base + maxDelta, target))));
+      panA = clampAround(panB, panA);
+      panC = clampAround(panB, panC);
+
+      const d = Math.max(1, endTime - startTime);
+      const seg1 = Math.max(0.01, d * 0.35);
+      const seg2 = Math.max(seg1 + 0.01, d * 0.7);
 
       filterChain = [
-        `crop=${cropW}:${cropH}:'${panStart}+t*(${panEnd}-${panStart})/${Math.max(1, endTime - startTime)}':0`,
+        // Three-stage pan simulates speaker-to-speaker framing instead of static center crop.
+        `crop=${cropW}:${cropH}:'if(lt(t,${seg1}),${panA}+t*(${panB}-${panA})/${seg1},if(lt(t,${seg2}),${panB}+(t-${seg1})*(${panC}-${panB})/${Math.max(0.01, seg2 - seg1)},${panC}))':0`,
         `scale=${outW}:${outH}`,
-        "eq=contrast=1.07:brightness=0.015:saturation=1.12",
-        "vignette=PI/7",
+        "eq=contrast=1.06:brightness=0.012:saturation=1.1",
         `subtitles='${escapedAssPath}'`,
-        `drawbox=x=0:y=h-210:w=w:h=210:color=black@0.38:t=fill:enable='gte(t,${ctaStart})'`,
-        `drawtext=text='${escapedCtaText}':fontcolor=white:fontsize=38:x=(w-text_w)/2:y=h-130:enable='gte(t,${ctaStart})'`,
+        `drawbox=x=0:y=h-210:w=iw:h=210:color=black@0.38:t=fill:enable='gte(t,${ctaStart})'`,
+        `drawtext=text='${escapedCtaText}':fontcolor=white:fontsize=50:x=(w-text_w)/2:y=h-130:enable='gte(t,${ctaStart})'`,
         `fade=t=in:st=0:d=${fadeDuration}`,
         `fade=t=out:st=${fadeOutStart}:d=${fadeDuration}`,
       ].join(",");
@@ -207,11 +414,10 @@ export async function cutClip(
       filterChain = [
         `scale=${outW}:${outH}:force_original_aspect_ratio=decrease`,
         `pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2:black`,
-        "eq=contrast=1.06:brightness=0.012:saturation=1.1",
-        "vignette=PI/8",
+        "eq=contrast=1.05:brightness=0.01:saturation=1.08",
         `subtitles='${escapedAssPath}'`,
-        `drawbox=x=0:y=h-210:w=w:h=210:color=black@0.38:t=fill:enable='gte(t,${ctaStart})'`,
-        `drawtext=text='${escapedCtaText}':fontcolor=white:fontsize=38:x=(w-text_w)/2:y=h-130:enable='gte(t,${ctaStart})'`,
+        `drawbox=x=0:y=h-210:w=iw:h=210:color=black@0.38:t=fill:enable='gte(t,${ctaStart})'`,
+        `drawtext=text='${escapedCtaText}':fontcolor=white:fontsize=50:x=(w-text_w)/2:y=h-130:enable='gte(t,${ctaStart})'`,
         `fade=t=in:st=0:d=${fadeDuration}`,
         `fade=t=out:st=${fadeOutStart}:d=${fadeDuration}`,
       ].join(",");
@@ -303,12 +509,14 @@ export async function cutClip(
           const cropH = srcH;
           const cropW = Math.round(cropH * (outW / outH));
           const maxPanX = Math.max(0, srcW - cropW);
-          const panStart = smartTrack
-            ? smartTrack.panStart
-            : Math.round(maxPanX * 0.35);
-          const panEnd = smartTrack ? smartTrack.panEnd : Math.round(maxPanX * 0.65);
+          const panA = smartTrack ? smartTrack.panA : Math.round(maxPanX * 0.25);
+          const panB = smartTrack ? smartTrack.panB : Math.round(maxPanX * 0.5);
+          const panC = smartTrack ? smartTrack.panC : Math.round(maxPanX * 0.75);
+          const d = Math.max(1, endTime - startTime);
+          const seg1 = Math.max(0.01, d * 0.35);
+          const seg2 = Math.max(seg1 + 0.01, d * 0.7);
           fallbackVideoFilter = [
-            `crop=${cropW}:${cropH}:'${panStart}+t*(${panEnd}-${panStart})/${Math.max(1, endTime - startTime)}':0`,
+            `crop=${cropW}:${cropH}:'if(lt(t,${seg1}),${panA}+t*(${panB}-${panA})/${seg1},if(lt(t,${seg2}),${panB}+(t-${seg1})*(${panC}-${panB})/${Math.max(0.01, seg2 - seg1)},${panC}))':0`,
             `scale=${outW}:${outH}`,
             `subtitles='${escapedAssPath}'`,
           ].join(",");

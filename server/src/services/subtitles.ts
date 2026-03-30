@@ -72,12 +72,12 @@ function toKaraokeText(lineWords: TranscriptWord[]): string {
   return lineWords
     .map((w) => {
       const durCs = Math.max(5, Math.round((w.end - w.start) * 100));
-      const base = assEscape(w.word).toUpperCase();
+      const base = assEscape(w.word);
       if (!isPowerWord(w.word)) {
         return `{\\kf${durCs}}${base}`;
       }
       // Power words get a stronger active visual pop for hierarchy.
-      return `{\\kf${durCs}\\b1\\fs50\\c&H004AD5FF&}${base}{\\rCaption}`;
+      return `{\\kf${durCs}\\b1\\fs56\\c&H0038D8FF&}${base}{\\rCaption}`;
     })
     .join(" ");
 }
@@ -108,8 +108,16 @@ function buildLines(
 
     const lineDuration = word.end - lineStart;
     const wordCount = currentLine.length;
+    const prev = currentLine.length > 1 ? currentLine[currentLine.length - 2] : null;
+    const gapFromPrev = prev ? word.start - prev.end : 0;
+    const punctBreak = /[.!?,:;]$/.test(word.word);
 
-    if (wordCount >= maxWords || lineDuration >= maxDuration) {
+    if (
+      wordCount >= maxWords ||
+      lineDuration >= maxDuration ||
+      gapFromPrev >= 0.45 ||
+      punctBreak
+    ) {
       const start = Math.max(0, lineStart - clipStart);
       const end = Math.max(start, Math.min(clipEnd, word.end) - clipStart);
       lines.push({
@@ -144,7 +152,7 @@ export function generateSrt(
   clipStart: number,
   clipEnd: number,
 ): string {
-  const lines = buildLines(words, clipStart, clipEnd, 6, 2.5);
+  const lines = buildLines(words, clipStart, clipEnd, 5, 2.2);
   if (lines.length === 0) return "";
 
   return lines
@@ -161,16 +169,16 @@ export function generateAss(
   clipEnd: number,
   preset: CaptionPreset = "bold",
 ): string {
-  const lines = buildLines(words, clipStart, clipEnd, 4, 1.5);
+  const lines = buildLines(words, clipStart, clipEnd, 3, 1.2);
   if (lines.length === 0) return "";
 
   const styleByPreset: Record<CaptionPreset, string> = {
     clean:
-      "Style: Caption,Arial,40,&H00FFFFFF,&H00BFBFBF,&H00000000,&HA0000000,-1,0,0,0,100,100,0,0,1,2.3,0.5,2,90,90,150,1",
+      "Style: Caption,Arial,48,&H00FFFFFF,&H00DCDCDC,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,1,3.2,0.6,2,80,80,180,1",
     bold:
-      "Style: Caption,Arial,44,&H00FFFFFF,&H00A9A9A9,&H00000000,&HA0000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,90,140,1",
+      "Style: Caption,Arial,54,&H00FFFFFF,&H00A9A9A9,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,1,4.6,1.1,2,70,70,190,1",
     neon:
-      "Style: Caption,Arial,44,&H00F8F8F8,&H0077E6FF,&H00000000,&HA0000000,-1,0,0,0,100,100,0,0,1,3.5,1.2,2,90,90,140,1",
+      "Style: Caption,Arial,52,&H00FAFAFA,&H0077E6FF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,1,4.8,1.2,2,70,70,190,1",
   };
 
   const header = `[Script Info]

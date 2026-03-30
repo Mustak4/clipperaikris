@@ -24,10 +24,15 @@ export interface Highlight {
 }
 
 export type CaptionPreset = "clean" | "bold" | "neon";
+export type CenterBias = "left" | "center" | "right";
+export type ZoomStrength = "low" | "medium" | "high";
 
 export interface RenderOptions {
   captionPreset?: CaptionPreset;
   ctaText?: string;
+  renderEngine?: "remotion" | "ffmpeg";
+  centerBias?: CenterBias;
+  zoomStrength?: ZoomStrength;
 }
 
 export interface ClipResult {

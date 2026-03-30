@@ -270,6 +270,16 @@ router.post("/:id/generate", async (req: Request, res: Response) => {
     captionPreset: ((req.body?.options?.captionPreset as CaptionPreset) || "bold"),
     ctaText:
       typeof req.body?.options?.ctaText === "string" ? req.body.options.ctaText : "Follow for more",
+    renderEngine:
+      req.body?.options?.renderEngine === "ffmpeg" ? "ffmpeg" : "remotion",
+    centerBias:
+      req.body?.options?.centerBias === "left" || req.body?.options?.centerBias === "right"
+        ? req.body.options.centerBias
+        : "center",
+    zoomStrength:
+      req.body?.options?.zoomStrength === "low" || req.body?.options?.zoomStrength === "high"
+        ? req.body.options.zoomStrength
+        : "medium",
   };
 
   if (!clips || clips.length === 0) {

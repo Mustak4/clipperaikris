@@ -13,6 +13,13 @@ type RenderArgs = {
   inputVideoPath: string;
   outputVideoPath: string;
   srtPath: string;
+  durationInFrames: number;
+  durationSeconds: number;
+  srcW: number;
+  srcH: number;
+  keyframes: Array<{ t: number; centerX: number; zoom: number }>;
+  captionPreset?: "clean" | "bold" | "neon";
+  ctaText?: string;
 };
 
 let serveUrlCache: string | null = null;
@@ -46,27 +53,47 @@ function parseSrt(content: string): SrtCue[] {
 
 async function getServeUrl(): Promise<string> {
   if (serveUrlCache) return serveUrlCache;
-  const entryPoint = path.resolve(process.cwd(), "remotion", "index.ts");
-  serveUrlCache = await bundle({
+  const entryPoint = path.resolve(process.cwd(), "remotion", "index.tsx");
+  const bundled = await bundle({
     entryPoint,
     webpackOverride: (config) => config,
   });
-  return serveUrlCache;
+  serveUrlCache = bundled;
+  return bundled;
 }
 
 export async function renderWithRemotion(args: RenderArgs): Promise<void> {
-  const { inputVideoPath, outputVideoPath, srtPath } = args;
+  const {
+    inputVideoPath,
+    outputVideoPath,
+    srtPath,
+    durationInFrames,
+    durationSeconds,
+    srcW,
+    srcH,
+    keyframes,
+    captionPreset,
+    ctaText,
+  } = args;
   const srtContent = fs.existsSync(srtPath) ? fs.readFileSync(srtPath, "utf-8") : "";
   const cues = parseSrt(srtContent);
+  const inputProps = {
+    videoPath: `file://${inputVideoPath}`,
+    cues,
+    durationInFrames,
+    durationSeconds,
+    srcW,
+    srcH,
+    keyframes,
+    captionPreset,
+    ctaText,
+  };
 
   const serveUrl = await getServeUrl();
   const composition = await selectComposition({
     serveUrl,
     id: "ClipVertical",
-    inputProps: {
-      videoPath: `file://${inputVideoPath}`,
-      cues,
-    },
+    inputProps,
   });
 
   await renderMedia({
@@ -74,10 +101,7 @@ export async function renderWithRemotion(args: RenderArgs): Promise<void> {
     serveUrl,
     codec: "h264",
     outputLocation: outputVideoPath,
-    inputProps: {
-      videoPath: `file://${inputVideoPath}`,
-      cues,
-    },
+    inputProps,
     chromiumOptions: {
       gl: "angle",
     },
