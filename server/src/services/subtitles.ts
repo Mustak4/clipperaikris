@@ -25,6 +25,70 @@ function formatAssTime(seconds: number): string {
   return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
 }
 
+const EMPHASIS_STOP_WORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "that",
+  "this",
+  "with",
+  "from",
+  "your",
+  "you",
+  "have",
+  "just",
+  "into",
+  "about",
+  "what",
+  "when",
+  "where",
+  "will",
+  "they",
+  "them",
+  "there",
+  "because",
+  "really",
+  "very",
+]);
+
+function normalizeToken(token: string): string {
+  return token.toLowerCase().replace(/[^a-z0-9']/g, "");
+}
+
+function scoreWordForEmphasis(raw: string): number {
+  const token = normalizeToken(raw);
+  if (!token || EMPHASIS_STOP_WORDS.has(token)) return -1;
+  let score = token.length;
+  if (/[!?]/.test(raw)) score += 3;
+  if (/^[A-Z]{2,}$/.test(raw)) score += 2;
+  return score;
+}
+
+function stylizeAssText(text: string): string {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "";
+
+  let bestIndex = -1;
+  let bestScore = -1;
+  for (let i = 0; i < words.length; i++) {
+    const score = scoreWordForEmphasis(words[i]);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = i;
+    }
+  }
+
+  return words
+    .map((w, i) => {
+      const escaped = assEscape(w);
+      if (i !== bestIndex || bestScore < 4) return escaped;
+      // Slightly highlight one impactful word per line for clearer visual hierarchy.
+      return `{\\c&H004AD5FF&\\b1}${escaped}{\\rCaption}`;
+    })
+    .join(" ")
+    .toUpperCase();
+}
+
 function buildLines(
   words: TranscriptWord[],
   clipStart: number,
@@ -114,7 +178,7 @@ YCbCr Matrix: TV.709
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,Arial,44,&H00FFFFFF,&H000000FF,&H00000000,&HA0000000,-1,0,0,0,100,100,0,0,1,3,1,5,100,100,320,1
+Style: Caption,Arial,44,&H00FFFFFF,&H000000FF,&H00000000,&HA0000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,90,140,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -124,8 +188,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     .map((l) => {
       const start = formatAssTime(Math.max(0, l.start));
       const end = formatAssTime(Math.max(Math.max(0, l.start) + 0.3, l.end));
-      const upper = assEscape(l.text).toUpperCase();
-      return `Dialogue: 0,${start},${end},Caption,,0,0,0,,${upper}`;
+      const styled = stylizeAssText(l.text);
+      return `Dialogue: 0,${start},${end},Caption,,0,0,0,,${styled}`;
     })
     .join("\n");
 

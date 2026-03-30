@@ -84,6 +84,9 @@ export async function cutClip(
 
     const outW = 720;
     const outH = 1280;
+    const clipDuration = Math.max(0.1, endTime - startTime);
+    const fadeDuration = Math.min(1, clipDuration / 2);
+    const fadeOutStart = Math.max(0, clipDuration - fadeDuration);
 
     // Determine the crop region from source. For a 16:9 source we take a
     // vertical strip; for already-vertical we keep the full frame.
@@ -104,19 +107,31 @@ export async function cutClip(
       filterChain = [
         `crop=${cropW}:${cropH}:'${panStart}+t*(${panEnd}-${panStart})/${Math.max(1, endTime - startTime)}':0`,
         `scale=${outW}:${outH}`,
+        "eq=contrast=1.07:brightness=0.015:saturation=1.12",
+        "vignette=PI/7",
         `subtitles='${escapedAssPath}'`,
+        `fade=t=in:st=0:d=${fadeDuration}`,
+        `fade=t=out:st=${fadeOutStart}:d=${fadeDuration}`,
       ].join(",");
     } else {
       // Source is already vertical or close. Scale + pad.
       filterChain = [
         `scale=${outW}:${outH}:force_original_aspect_ratio=decrease`,
         `pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2:black`,
+        "eq=contrast=1.06:brightness=0.012:saturation=1.1",
+        "vignette=PI/8",
         `subtitles='${escapedAssPath}'`,
+        `fade=t=in:st=0:d=${fadeDuration}`,
+        `fade=t=out:st=${fadeOutStart}:d=${fadeDuration}`,
       ].join(",");
     }
 
     ffmpeg(rawClipPath)
       .videoFilters(filterChain)
+      .audioFilters([
+        `afade=t=in:st=0:d=${fadeDuration}`,
+        `afade=t=out:st=${fadeOutStart}:d=${fadeDuration}`,
+      ])
       .outputOptions([
         "-c:v",
         "libx264",

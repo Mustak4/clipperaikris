@@ -112,6 +112,11 @@ function mergeHighlights(highlights: Highlight[]): Highlight[] {
   return merged;
 }
 
+function introCutoff(minStart: number, maxEnd: number): number {
+  const span = Math.max(0, maxEnd - minStart);
+  return minStart + Math.min(30, span * 0.15);
+}
+
 function getTimelineBounds(segments: TranscriptSegment[]): { minStart: number; maxEnd: number } {
   if (segments.length === 0) return { minStart: 0, maxEnd: 0 };
   return {
@@ -253,17 +258,29 @@ export async function detectHighlights(
   }
 
   const merged = mergeHighlights(allHighlights);
-  const ranked = merged.sort((a, b) => b.score - a.score);
+  const { minStart, maxEnd } = getTimelineBounds(segments);
+  const cutoff = introCutoff(minStart, maxEnd);
+  const ranked = merged.sort((a, b) => {
+    const adjustedA = a.score - (a.startTime < cutoff ? 1.25 : 0);
+    const adjustedB = b.score - (b.startTime < cutoff ? 1.25 : 0);
+    if (adjustedB !== adjustedA) return adjustedB - adjustedA;
+    return b.startTime - a.startTime;
+  });
 
   // Ensure a minimum of 5 clips, even if the model returns too few.
   if (ranked.length < 5) {
-    const { minStart, maxEnd } = getTimelineBounds(segments);
     const span = Math.max(0, maxEnd - minStart);
     const desired = 5;
     const window = 22; // seconds
-    const step = span > window ? (span - window) / Math.max(1, desired - 1) : 0;
+    const safeStart = introCutoff(minStart, maxEnd);
+    const available = Math.max(0, maxEnd - safeStart);
+    const step =
+      available > window
+        ? (available - window) / Math.max(1, desired - 1)
+        : 0;
+
     for (let i = ranked.length; i < desired; i++) {
-      const s = minStart + i * step;
+      const s = safeStart + i * step;
       const { start, end } = expandToDuration(s, s + window, 15, 30, minStart, maxEnd);
       const transcript = segments
         .filter((seg) => seg.end >= start && seg.start <= end)
